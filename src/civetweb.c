@@ -776,6 +776,7 @@ mg_free(void *a)
 
 #endif
 
+static struct mg_connection* fc( struct mg_context *ctx );
 
 static void mg_vsnprintf(const struct mg_connection *conn,
                          int *truncated,
@@ -1106,12 +1107,13 @@ enum {
     LISTENING_PORTS,
     DOCUMENT_ROOT,
     SSL_CERTIFICATE,
+    SSL_PKEY,
     NUM_THREADS,
     RUN_AS_USER,
     REWRITE,
     HIDE_FILES,
     REQUEST_TIMEOUT,
-    SSL_DO_VERIFY_PEER,
+    SSL_DO_VERIFY_PEER,         /// TODO: Support these with mbedtls
     SSL_CA_PATH,
     SSL_CA_FILE,
     SSL_VERIFY_DEPTH,
@@ -1179,6 +1181,7 @@ static struct mg_option config_options[] = {
     {"listening_ports", CONFIG_TYPE_STRING, "8080"},
     {"document_root", CONFIG_TYPE_DIRECTORY, NULL},
     {"ssl_certificate", CONFIG_TYPE_FILE, NULL},
+    {"ssl_pkey", CONFIG_TYPE_FILE, NULL},
     {"num_threads", CONFIG_TYPE_NUMBER, "50"},
     {"run_as_user", CONFIG_TYPE_STRING, NULL},
     {"url_rewrite_patterns", CONFIG_TYPE_STRING, NULL},
@@ -1531,8 +1534,12 @@ mg_init_mbedtls( struct mg_context* ctx )
     //mbedtls_x509_crt         * cachain;
     mbedtls_pk_context       * pkey;
 
+    const char* crt_path;
+    const char* key_path;
+
     int ret;
     const char pers[] = "musa_ssl_server";
+
 
  #if !defined(MBEDTLS_BIGNUM_C)  || !defined(MBEDTLS_CERTS_C)      ||  \
      !defined(MBEDTLS_ENTROPY_C) || !defined(MBEDTLS_SSL_TLS_C)    ||  \
@@ -1543,6 +1550,16 @@ mg_init_mbedtls( struct mg_context* ctx )
 
     return 0;
 #endif
+
+    if( ctx->config[SSL_CERTIFICATE] == NULL || 
+        ctx->config[SSL_PKEY] == NULL )
+    {
+        mg_cry( fc( ctx ), "SSL certificate or private key path was not specified." );
+        return 0;
+    }
+
+    crt_path = ctx->config[SSL_CERTIFICATE];
+    key_path = ctx->config[SSL_PKEY];
 
     mg_mbedtls* tls = (mg_mbedtls*)mg_malloc( sizeof( mg_mbedtls ) );
     memset( tls, 0, sizeof( mg_mbedtls ) );
@@ -1565,13 +1582,14 @@ mg_init_mbedtls( struct mg_context* ctx )
     // We use only a single entropy source that is used in all the threads
     mbedtls_entropy_init( entropy );
 
+
     /// 1. Load the certificates and private RSA key
 
     // This demonstration program uses embedded test certificates.
     // Instead, you may want to use mbedtls_x509_crt_parse_file() to read the
     // server and CA certificates, as well as mbedtls_pk_parse_keyfile().
-    /// TODO: Read path from options
-    ret = mbedtls_x509_crt_parse_file( srvcert, "http/server.crt" );
+    
+    ret = mbedtls_x509_crt_parse_file( srvcert, crt_path );
     //ret = mbedtls_x509_crt_parse( srvcert,
     //        (const unsigned char*)mbedtls_test_srv_crt,
     //        mbedtls_test_srv_crt_len );
@@ -1596,7 +1614,7 @@ mg_init_mbedtls( struct mg_context* ctx )
 
     
 
-    ret = mbedtls_pk_parse_keyfile( pkey, "http/server.key", NULL );
+    ret = mbedtls_pk_parse_keyfile( pkey, key_path, NULL );
     //ret =  mbedtls_pk_parse_key( pkey, 
     //        (const unsigned char *) mbedtls_test_srv_key,
     //        mbedtls_test_srv_key_len, NULL, 0 );
@@ -1666,7 +1684,6 @@ mg_init_mbedtls( struct mg_context* ctx )
     
     ctx->ssl_ctx = tls;
 
-ok:
     return 1;
 
 exit:
@@ -1721,7 +1738,7 @@ mg_shutdown_ssl_connection( struct mg_connection* conn )
         if( ret != MBEDTLS_ERR_SSL_WANT_READ &&
             ret != MBEDTLS_ERR_SSL_WANT_WRITE )
         {
-            mg_cry( "failed: mbedtls_ssl_close_notify returned -0x%04x\n", ret );
+            mg_cry( conn, "failed: mbedtls_ssl_close_notify returned -0x%04x\n", ret );
             return;
         }
     }
@@ -1739,7 +1756,7 @@ mg_free_ssl_connection( struct mg_connection* conn )
 
 
 static void
-mg_unnintialize_ssl( struct mg_context* ctx )
+mg_unnintialize_mbedtls( struct mg_context* ctx )
 {
     mg_mbedtls* ssl = ctx->ssl_ctx;
 
@@ -2228,8 +2245,7 @@ mg_cry(const struct mg_connection *conn, const char *fmt, ...)
 
 /* Return fake connection structure. Used for logging, if connection
  * is not applicable at the moment of logging. */
-static struct mg_connection *
-fc(struct mg_context *ctx)
+struct mg_connection* fc(struct mg_context *ctx)
 {
     static struct mg_connection fake_connection;
     fake_connection.ctx = ctx;
@@ -11033,7 +11049,9 @@ tls_dtor(void *key)
 }
 
 
-#if !defined(NO_SSL) && !defined(CIVETWEB_USE_MBEDTLS)
+#if !defined(NO_SSL)
+
+#if !defined(CIVETWEB_USE_MBEDTLS)
 
 /* Must be set if sizeof(pthread_t) > sizeof(unsigned long) */
 static unsigned long
@@ -11291,10 +11309,14 @@ static int cryptolib_users = 1; /* Reference counter for crypto library. */
 static int cryptolib_users = 0; /* Reference counter for crypto library. */
 #endif
 
+#endif // !defined(CIVETWEB_USE_MBEDTLS)
 
 static int
 initialize_ssl(struct mg_context *ctx)
 {
+#if defined(CIVETWEB_USE_MBEDTLS)
+    return mg_init_mbedtls( ctx );
+#else
     int i;
     size_t size;
 
@@ -11335,8 +11357,10 @@ initialize_ssl(struct mg_context *ctx)
     CRYPTO_set_id_callback(&ssl_id_callback);
 
     return 1;
+#endif
 }
 
+#if !defined(CIVETWEB_USE_MBEDTLS)
 
 static int
 ssl_use_pem_file(struct mg_context *ctx, const char *pem)
@@ -11394,13 +11418,15 @@ ssl_get_protocol(int version_id)
         ret |= SSL_OP_NO_TLSv1_1;
     return ret;
 }
-
+#endif
 
 /* Dynamically load SSL library. Set up ctx->ssl_ctx pointer. */
 static int
 set_ssl_option(struct mg_context *ctx)
 {
     const char *pem;
+
+#if !defined(CIVETWEB_USE_MBEDTLS)
     int callback_ret;
     int should_verify_peer;
     const char *ca_path;
@@ -11412,6 +11438,7 @@ set_ssl_option(struct mg_context *ctx)
     md5_byte_t ssl_context_id[16];
     md5_state_t md5state;
     int protocol_ver;
+#endif
 
     /* If PEM file is not specified and the init_ssl callback
      * is not specified, skip SSL initialization. */
@@ -11441,7 +11468,7 @@ set_ssl_option(struct mg_context *ctx)
     mg_init_mbedtls( ctx );
     if( ctx->ssl_ctx == NULL )
     {
-        mg_cry( "Failed to initialize mbedtls SSL lib" );
+        mg_cry( fc(ctx), "Failed to initialize mbedtls SSL lib" );
         return 0;
     }
 #else
@@ -11558,6 +11585,9 @@ set_ssl_option(struct mg_context *ctx)
 static void
 uninitialize_ssl(struct mg_context *ctx)
 {
+#if defined(CIVETWEB_USE_MBEDTLS)
+    mg_unnintialize_mbedtls( ctx );
+#else
     int i;
     (void)ctx;
 
@@ -11582,6 +11612,7 @@ uninitialize_ssl(struct mg_context *ctx)
         mg_free(ssl_mutexes);
         ssl_mutexes = NULL;
     }
+#endif
 }
 #endif /* !NO_SSL */
 
@@ -13037,11 +13068,7 @@ master_thread_run(void *thread_func_param)
 
 #if !defined(NO_SSL)
     if (ctx->ssl_ctx != NULL) {
-        #ifndef CIVETWEB_USE_MBEDTLS
-            uninitialize_ssl(ctx);
-        #else
-            mg_unnintialize_ssl( ctx );
-        #endif
+         uninitialize_ssl(ctx);
     }
 #endif
     DEBUG_TRACE("%s", "exiting");
@@ -13363,11 +13390,7 @@ mg_start(const struct mg_callbacks *callbacks,
      * be initialized before listening ports. UID must be set last. */
     if (!set_gpass_option(ctx) ||
 #if !defined(NO_SSL)
-    #ifndef CIVETWEB_USE_MBEDTLS
         !set_ssl_option(ctx) ||
-    #else   
-        !mg_init_mbedtls( ctx ) ||
-    #endif
 #endif
         !set_ports_option(ctx) ||
 #if !defined(_WIN32)
