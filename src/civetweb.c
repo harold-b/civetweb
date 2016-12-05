@@ -138,6 +138,7 @@ mg_static_assert(sizeof(void *) >= sizeof(int), "data type size check");
 #include <mach/mach_time.h>
 #include <assert.h>
 
+#ifdef CIVET_OWN_CLOCK_GETTIME
 
 /* clock_gettime is not implemented on OSX */
 int clock_gettime(int clk_id, struct timespec *t);
@@ -184,6 +185,8 @@ clock_gettime(int clk_id, struct timespec *t)
     return -1; /* EINVAL - Clock ID is unknown */
 }
 #endif
+
+#endif // CIVET_OWN_CLOCK_GETTIME
 
 
 #include <time.h>
