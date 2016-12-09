@@ -129,8 +129,6 @@ mg_static_assert(sizeof(void *) >= sizeof(int), "data type size check");
 
 #ifdef __MACH__
 
-#define CLOCK_MONOTONIC (1)
-#define CLOCK_REALTIME (2)
 
 #include <sys/time.h>
 #include <mach/clock.h>
@@ -138,13 +136,28 @@ mg_static_assert(sizeof(void *) >= sizeof(int), "data type size check");
 #include <mach/mach_time.h>
 #include <assert.h>
 
+#define CIVET_OWN_CLOCK_GETTIME 1
 #ifdef CIVET_OWN_CLOCK_GETTIME
 
+#ifdef CLOCK_MONOTONIC
+    #undef CLOCK_MONOTONIC
+#endif
+#define CLOCK_MONOTONIC (1)
+
+#ifdef CLOCK_REALTIME
+    #undef CLOCK_REALTIME
+#endif
+#define CLOCK_REALTIME (2)
+
 /* clock_gettime is not implemented on OSX */
-int clock_gettime(int clk_id, struct timespec *t);
+// Harold Note:
+// It is implemented now, but crashes in my iPad 3...
+// We override with the one provided by civetweb
+//int clock_gettime(int clk_id, struct timespec *t);
+#define clock_gettime(clk_id, t) _clock_gettime( clk_id, t )
 
 int
-clock_gettime(int clk_id, struct timespec *t)
+_clock_gettime(int clk_id, struct timespec *t)
 {
     memset(t, 0, sizeof(*t));
     if (clk_id == CLOCK_REALTIME) {
@@ -13537,3 +13550,8 @@ mg_check_feature(unsigned feature)
         ;
     return (feature & feature_set);
 }
+    
+
+#ifdef CIVET_OWN_CLOCK_GETTIME
+    #undef clock_gettime
+#endif
