@@ -45,6 +45,8 @@
 /// Musashi Defines
 /*
 */
+#define HAVE_STDINT 1
+
 #define CIVETWEB_NO_HIGH_THREAD_PRIORITY 1
 #define CIVETWEB_USE_MBEDTLS 1
 
